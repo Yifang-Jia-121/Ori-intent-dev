@@ -32,6 +32,7 @@ config['degree_num'] = 20
 config['prior'] = True
 config['pop_fading'] = 1
 config['ci_alpha'] = 0.2
+config['r_star'] = 0.0
 config['k'] = 20
 config['latent_dim_rec'] = 64
 

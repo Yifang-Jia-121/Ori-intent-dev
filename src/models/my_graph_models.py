@@ -151,7 +151,8 @@ class CISGNN(nn.Module):
         items_emb = all_items
         scores = torch.matmul(users_emb, items_emb.t())
         m_scores = torch.matmul(mediator_emb1[users], items_emb.t())
-        R_CR = scores * torch.sigmoid(m_scores)
+        r_star = self.config.get('r_star', 0.0)
+        R_CR = (scores - r_star) * torch.sigmoid(m_scores)
         return self.f(R_CR)
 
     def save_all_ratings(self):
