@@ -48,6 +48,7 @@ class PairDataset:
 
         interactionNet = pd.concat([self.train_set,self.test_set])
         self.niche_items = calculate_metrics(interactionNet)
+        self.eval_item_counts = load_item_counts(interactionNet, self.m_item)
         print('+++++++++++++++++++++++++++++++++++++++++++++++++++')
 
         test_data_satisfactory = self.test_set.loc[self.test_set['rating'] > 4].reset_index(drop=True)

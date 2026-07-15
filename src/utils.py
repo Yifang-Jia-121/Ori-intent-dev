@@ -84,21 +84,22 @@ def HR_ATk(test_data, r, k):
     score = np.count_nonzero(right_pred)
     return score
 
-def diversity_at_k(pred_data, item_popularity, niche_items, k):
+def diversity_at_k(pred_data, item_popularity, niche_items, k, user_count=None):
     sum_novelty = []
     sum_niche_rates = []
     u_num = len(pred_data)
+    novelty_user_count = user_count if user_count is not None else u_num
     for u in range(u_num):
         predictTopK = pred_data[u][:k]
         novelty = 0.0
         niche_num = 0.0
         for i in predictTopK:
             try:
-                novelty += (np.log2(u_num / item_popularity[int(i)]))
+                novelty += (np.log2(novelty_user_count / item_popularity[int(i)]))
                 if i in niche_items:
                     niche_num+=1
             except:
-                novelty += (np.log2(u_num / 1))
+                novelty += (np.log2(novelty_user_count / 1))
                 if i in niche_items:
                     niche_num+=1
         novelty = novelty / k

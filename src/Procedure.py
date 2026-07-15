@@ -61,7 +61,7 @@ def Test(dataset, Recmodel, cold=False, satisfication=False):
         testDict: dict = dataset.testDict
 
     Recmodel.forecast = True
-    item_counts = dataset.item_counts
+    item_counts = getattr(dataset, 'eval_item_counts', dataset.item_counts)
     Recmodel = Recmodel.eval()
     max_K = max(world.topks)
     results = {'hr': np.zeros(len(world.topks)),
@@ -112,7 +112,7 @@ def Test(dataset, Recmodel, cold=False, satisfication=False):
         del results['hr'], results['ndcg']
         all_rating = torch.cat(rating_list, dim=0).cpu().numpy()
         for k in world.topks:
-            ret = utils.diversity_at_k(all_rating, item_counts, dataset.niche_items, k)
+            ret = utils.diversity_at_k(all_rating, item_counts, dataset.niche_items, k, dataset.n_users)
             results[f'novelty@{k}'] = ret['novelty']
             results[f'niche_rate@{k}'] = ret['niche_rate']
         # print(results)
@@ -124,7 +124,7 @@ def Evaluate(dataset, Recmodel, epoch, cold=False, w=None):
     valDict: dict = dataset.valDict
     Recmodel = Recmodel.eval()
     max_K = max(world.topks)
-    item_counts = dataset.item_counts
+    item_counts = getattr(dataset, 'eval_item_counts', dataset.item_counts)
     Recmodel.forecast = True
     results =  {
                'hr': np.zeros(len(world.topks)),
@@ -176,7 +176,7 @@ def Evaluate(dataset, Recmodel, epoch, cold=False, w=None):
         # del results['recall'], results['precision'], results['hr'], results['ndcg']
         all_rating = torch.cat(rating_list, dim=0).cpu().numpy()
         for k in world.topks:
-            ret = utils.diversity_at_k(all_rating, item_counts, dataset.niche_items, k)
+            ret = utils.diversity_at_k(all_rating, item_counts, dataset.niche_items, k, dataset.n_users)
             results[f'novelty@{k}'] = ret['novelty']
             results[f'niche_rate@{k}'] = ret['niche_rate']
         return results
