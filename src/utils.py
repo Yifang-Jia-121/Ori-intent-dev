@@ -160,7 +160,7 @@ def getLabel(test_data, pred_data):
 # =========================================================
 import numpy as np
 
-def calculate_metrics(df):
+def calculate_metrics(df, item_counts=None):
     # Number of unique users
     num_users = df['user'].nunique()
 
@@ -173,13 +173,16 @@ def calculate_metrics(df):
     # Sparsity
     sparsity = (1 - num_ratings / (num_users * num_items)) * 100
 
+    # Calculate the distribution of ratings per item.
+    if item_counts is None:
+        item_ratings_count = df['item'].value_counts()
+    else:
+        item_ratings_count = pd.Series(item_counts).sort_index()
+
     # Average number of ratings per item
-    avg_ratings_per_item = num_ratings / num_items
+    avg_ratings_per_item = item_ratings_count.sum() / len(item_ratings_count)
 
-    # Calculate the distribution of ratings per item
-    item_ratings_count = df['item'].value_counts()
-
-    niche_items = item_ratings_count[item_ratings_count<avg_ratings_per_item].index.values
+    niche_items = item_ratings_count[item_ratings_count < avg_ratings_per_item].index.values
     niche_items = set(niche_items)
 
     # Percentage of ratings from top 10% items

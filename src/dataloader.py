@@ -47,8 +47,8 @@ class PairDataset:
             self.item_popularity.to_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'item_popularity.txt'), index=False)
 
         interactionNet = pd.concat([self.train_set,self.test_set])
-        self.niche_items = calculate_metrics(interactionNet)
         self.eval_item_counts = load_item_counts(interactionNet, self.m_item)
+        self.niche_items = calculate_metrics(interactionNet, self.eval_item_counts)
         print('+++++++++++++++++++++++++++++++++++++++++++++++++++')
 
         test_data_satisfactory = self.test_set.loc[self.test_set['rating'] > 4].reset_index(drop=True)
