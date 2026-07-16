@@ -37,9 +37,30 @@ result_file = os.path.join(result_path, f'{file}.json')
 weight_file = os.path.join(weight_path, f'{file}.pth.tar')
 all_metrics_df = pd.DataFrame()
 best_hr = 0
+repeat_results = []
 print(f'#########Starting Experiment:{file}##############')
 # ==============================
 # torch.autograd.set_detect_anomaly(True)
+
+
+def to_builtin(value):
+    if hasattr(value, 'item'):
+        return value.item()
+    return value
+
+
+def summarize_results(results):
+    summary = {}
+    if not results:
+        return summary
+    keys = results[0].keys()
+    for key in keys:
+        values = [to_builtin(result[key]) for result in results]
+        summary[key] = {
+            'mean': float(pd.Series(values).mean()),
+            'std': float(pd.Series(values).std(ddof=0))
+        }
+    return summary
 
 
 for repeat_num in range(world.REPEAT):
@@ -71,5 +92,15 @@ for repeat_num in range(world.REPEAT):
     Recmodel.load_state_dict(torch.load(weight_file, map_location=torch.device('cpu')))
     test_results = Procedure.Test(dataset, Recmodel, False, False)
     print(test_results)
-    with open(result_file, 'w') as file:
-        file.write( json.dumps(test_results, indent=4))
+    repeat_results.append({key: to_builtin(value) for key, value in test_results.items()})
+
+summary_results = summarize_results(repeat_results)
+print("[TEST MEAN]")
+pprint({key: value['mean'] for key, value in summary_results.items()})
+with open(result_file, 'w') as file:
+    file.write(json.dumps({
+        'repeat': world.REPEAT,
+        'mean_results': {key: value['mean'] for key, value in summary_results.items()},
+        'std_results': {key: value['std'] for key, value in summary_results.items()},
+        'repeat_results': repeat_results
+    }, indent=4))
