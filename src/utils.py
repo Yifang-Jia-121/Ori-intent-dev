@@ -179,6 +179,7 @@ def calculate_metrics(df, item_counts=None):
         item_ratings_count = df['item'].value_counts()
     else:
         item_ratings_count = pd.Series(item_counts).sort_index()
+    ranked_item_counts = item_ratings_count.sort_values(ascending=False)
 
     # Average number of ratings per item
     avg_ratings_per_item = item_ratings_count.sum() / len(item_ratings_count)
@@ -188,17 +189,17 @@ def calculate_metrics(df, item_counts=None):
 
     # Percentage of ratings from top 10% items
     top_10_percent_count = int(num_items * 0.1)
-    top_10_percent_ratings = item_ratings_count[:top_10_percent_count].sum()
+    top_10_percent_ratings = ranked_item_counts[:top_10_percent_count].sum()
     percent_ratings_top_10 = (top_10_percent_ratings / num_ratings) * 100
 
     # Percentage of ratings from top 20% items
     top_20_percent_count = int(num_items * 0.2)
-    top_20_percent_ratings = item_ratings_count[:top_20_percent_count].sum()
+    top_20_percent_ratings = ranked_item_counts[:top_20_percent_count].sum()
     percent_ratings_top_20 = (top_20_percent_ratings / num_ratings) * 100
 
     # Percentage of ratings from top 50% items
     top_50_percent_count = int(num_items * 0.5)
-    top_50_percent_ratings = item_ratings_count[:top_50_percent_count].sum()
+    top_50_percent_ratings = ranked_item_counts[:top_50_percent_count].sum()
     percent_ratings_top_50 = (top_50_percent_ratings / num_ratings) * 100
 
     # Gini coefficient
