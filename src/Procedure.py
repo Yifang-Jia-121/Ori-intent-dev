@@ -51,6 +51,22 @@ def test_one_batch(X):
             'hr': np.array(hr),
             'ndcg': np.array(ndcg)}
 
+
+def _print_recommendation_frequency_diagnostics(all_rating, item_counts, k=50):
+    top_items = all_rating[:, :k].reshape(-1)
+    top_item_counts = np.array([item_counts[int(item)] for item in top_items])
+    total = len(top_item_counts)
+    if total == 0:
+        return
+    print(f"Top{k} recommendation item frequency diagnostics:")
+    print(f"  mean frequency: {np.mean(top_item_counts):.4f}")
+    print(f"  median frequency: {np.median(top_item_counts):.4f}")
+    print(f"  <=4 ratio: {np.mean(top_item_counts <= 4) * 100:.2f}")
+    print(f"  5-10 ratio: {np.mean((top_item_counts >= 5) & (top_item_counts <= 10)) * 100:.2f}")
+    print(f"  11-20 ratio: {np.mean((top_item_counts >= 11) & (top_item_counts <= 20)) * 100:.2f}")
+    print(f"  >20 ratio: {np.mean(top_item_counts > 20) * 100:.2f}")
+
+
 def Test(dataset, Recmodel, cold=False, satisfication=False):
     u_batch_size = world.config['test_u_batch_size']
     if cold:
@@ -111,6 +127,7 @@ def Test(dataset, Recmodel, cold=False, satisfication=False):
             results[f'ndcg@{k}'] = results['ndcg'][i]
         del results['hr'], results['ndcg']
         all_rating = torch.cat(rating_list, dim=0).cpu().numpy()
+        _print_recommendation_frequency_diagnostics(all_rating, item_counts, 50)
         for k in world.topks:
             ret = utils.diversity_at_k(all_rating, item_counts, dataset.niche_items, k, dataset.n_users)
             results[f'novelty@{k}'] = ret['novelty']

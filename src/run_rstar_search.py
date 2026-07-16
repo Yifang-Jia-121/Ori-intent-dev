@@ -19,6 +19,12 @@ def format_value(value):
     return str(value).replace(".", "p").replace("-", "m")
 
 
+def to_builtin(value):
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
 def train_and_test(dataset, config, weight_file):
     rec_model = my_graph_models.CISGNN(config, dataset).to(world.device)
     bpr = sampler.BPRLoss(rec_model, config)
@@ -64,7 +70,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train CISGNN with counterfactual r_star values.")
     parser.add_argument("--dataset", default=world.dataset)
     parser.add_argument("--values", nargs="+", type=float, default=[0.0, 0.1, 0.2, 0.5, 1.0])
-    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--repeat", type=int, default=world.REPEAT)
     parser.add_argument("--epochs", type=int, default=None)
     return parser.parse_args()
 
@@ -107,7 +113,7 @@ def main():
                 "best_epoch": best_perf["best_epoch"],
                 "best_val_hr@50": best_perf["hr@50"],
                 "best_val_ndcg@50": best_perf["ndcg@50"],
-                **test_results,
+                **{key: to_builtin(result) for key, result in test_results.items()},
             }
             rows.append(row)
             print(json.dumps(row, indent=4))
