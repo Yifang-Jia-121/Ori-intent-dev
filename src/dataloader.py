@@ -26,6 +26,16 @@ def _convert_sp_mat_to_sp_tensor(X):
     return torch.sparse_coo_tensor(index, data, torch.Size(coo.shape))
 
 
+def _ensure_rating_column(df):
+    if 'rating' not in df.columns:
+        for rating_col in ['rate', 'stars', 'score']:
+            if rating_col in df.columns:
+                return df.rename(columns={rating_col: 'rating'})
+        df = df.copy()
+        df['rating'] = 1.0
+    return df
+
+
 class PairDataset:
     def __init__(self, src="Ciao"):
         self.src = src
@@ -34,6 +44,8 @@ class PairDataset:
             self.train_set = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'train_set.txt'))
             self.test_set = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'test_set.txt'))
             self.item_popularity = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'item_popularity.txt'))
+            self.train_set = _ensure_rating_column(self.train_set)
+            self.test_set = _ensure_rating_column(self.test_set)
             self.n_user = pd.concat([self.train_set, self.test_set])['user'].nunique()
             self.m_item = pd.concat([self.train_set, self.test_set])['item'].nunique()
         except IOError:
@@ -506,6 +518,7 @@ def loadInteraction(src='Ciao', dataset_name='', prepro='origin', binary=False, 
 
     elif src == 'Philadelphia' or src == 'Tucson':
         df = pd.read_csv(os.path.join(world.DATA_PATH, 'raw', src, 'ratings.csv'))
+        df = _ensure_rating_column(df)
         df['timestamp'] = pd.to_datetime(df['timestamp']).view('int64')// 10**9
     else:
         raise ValueError('Invalid Dataset Error')
