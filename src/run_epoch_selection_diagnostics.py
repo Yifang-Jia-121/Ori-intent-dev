@@ -34,6 +34,101 @@ def prefixed_metrics(prefix, metrics):
     return {f"{prefix}{key}": to_builtin(value) for key, value in metrics.items()}
 
 
+def compact_epoch_rows(epoch_rows):
+    return [
+        {
+            "dataset": row["dataset"],
+            "repeat": row["repeat"],
+            "epoch": row["epoch"],
+            "val_hr@50": row["val_hr@50"],
+            "val_niche_rate@50": row["val_niche_rate@50"],
+        }
+        for row in epoch_rows
+    ]
+
+
+def selection_summary_rows(selection_rows):
+    rows = []
+    by_key = {}
+    for row in selection_rows:
+        by_key[(row["dataset"], row["repeat"], row["strategy"])] = row
+
+    dataset_repeats = sorted({(dataset_name, repeat) for dataset_name, repeat, _ in by_key})
+    for dataset_name, repeat in dataset_repeats:
+        hr_row = by_key.get((dataset_name, repeat, "best_hr"))
+        niche_row = by_key.get((dataset_name, repeat, "best_niche_rate"))
+        if hr_row is None or niche_row is None:
+            continue
+        rows.append({
+            "dataset": dataset_name,
+            "repeat": repeat,
+            "hr_best_epoch": hr_row["selected_epoch"],
+            "hr_best_val_hr@50": hr_row["selected_val_hr@50"],
+            "hr_best_val_niche_rate@50": hr_row["selected_val_niche_rate@50"],
+            "hr_best_test_hr@50": hr_row["test_hr@50"],
+            "hr_best_test_niche_rate@50": hr_row["test_niche_rate@50"],
+            "niche_best_epoch": niche_row["selected_epoch"],
+            "niche_best_val_hr@50": niche_row["selected_val_hr@50"],
+            "niche_best_val_niche_rate@50": niche_row["selected_val_niche_rate@50"],
+            "niche_best_test_hr@50": niche_row["test_hr@50"],
+            "niche_best_test_niche_rate@50": niche_row["test_niche_rate@50"],
+            "test_hr_delta_niche_minus_hr": niche_row["test_hr@50"] - hr_row["test_hr@50"],
+            "test_niche_delta_niche_minus_hr": niche_row["test_niche_rate@50"] - hr_row["test_niche_rate@50"],
+        })
+    return rows
+
+
+def plot_epoch_trend(epoch_rows, selection_rows, output_file):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is not installed; skip epoch trend plot.")
+        return None
+
+    by_repeat = {}
+    for row in epoch_rows:
+        by_repeat.setdefault(row["repeat"], []).append(row)
+
+    selection_by_repeat = {}
+    for row in selection_rows:
+        selection_by_repeat.setdefault(row["repeat"], {})[row["strategy"]] = row
+
+    repeat_count = len(by_repeat)
+    fig, axes = plt.subplots(repeat_count, 1, figsize=(10, max(4, 3.5 * repeat_count)), squeeze=False)
+    for axis, repeat in zip(axes[:, 0], sorted(by_repeat)):
+        rows = sorted(by_repeat[repeat], key=lambda row: row["epoch"])
+        epochs = [row["epoch"] for row in rows]
+        val_hr = [row["val_hr@50"] * 100 for row in rows]
+        val_niche = [row["val_niche_rate@50"] for row in rows]
+        axis.plot(epochs, val_hr, marker="o", label="val HR@50 x100")
+        axis.plot(epochs, val_niche, marker="o", label="val NicheRate@50")
+
+        repeat_selection = selection_by_repeat.get(repeat, {})
+        if "best_hr" in repeat_selection:
+            axis.axvline(
+                repeat_selection["best_hr"]["selected_epoch"],
+                color="#2ca02c",
+                linestyle="--",
+                label="HR-best epoch",
+            )
+        if "best_niche_rate" in repeat_selection:
+            axis.axvline(
+                repeat_selection["best_niche_rate"]["selected_epoch"],
+                color="#d62728",
+                linestyle="--",
+                label="Niche-best epoch",
+            )
+        axis.set_title(f"repeat {repeat}")
+        axis.set_xlabel("epoch")
+        axis.set_ylabel("value")
+        axis.legend()
+
+    fig.tight_layout()
+    fig.savefig(output_file, dpi=160)
+    plt.close(fig)
+    return output_file
+
+
 def strategy_scores(val_results, niche_weight):
     return {
         "best_hr": val_results["hr@50"],
@@ -152,20 +247,35 @@ def main():
 
     prefix = f"{base_file}-epoch-selection-diagnostics"
     epoch_file = os.path.join(result_path, f"{prefix}-epochs.csv")
+    compact_epoch_file = os.path.join(result_path, f"{prefix}-compact-epochs.csv")
     selection_file = os.path.join(result_path, f"{prefix}-selections.csv")
+    summary_file = os.path.join(result_path, f"{prefix}-hr-vs-niche-summary.csv")
     json_file = os.path.join(result_path, f"{prefix}.json")
+    trend_plot_file = os.path.join(result_path, f"{prefix}-trend.png")
+    compact_rows = compact_epoch_rows(epoch_rows)
+    summary_rows = selection_summary_rows(selection_rows)
+    trend_plot = plot_epoch_trend(epoch_rows, selection_rows, trend_plot_file)
     write_csv(epoch_file, epoch_rows)
+    write_csv(compact_epoch_file, compact_rows)
     write_csv(selection_file, selection_rows)
+    write_csv(summary_file, summary_rows)
     with open(json_file, "w") as file:
         file.write(json.dumps({
             "epoch_results": epoch_rows,
+            "compact_epoch_results": compact_rows,
             "selection_results": selection_rows,
+            "hr_vs_niche_summary": summary_rows,
+            "trend_plot": trend_plot,
         }, indent=4))
 
     print("===========diagnostic files===========")
     print(f"epochs_csv: {epoch_file}")
+    print(f"compact_epochs_csv: {compact_epoch_file}")
     print(f"selections_csv: {selection_file}")
+    print(f"hr_vs_niche_summary_csv: {summary_file}")
     print(f"json: {json_file}")
+    if trend_plot is not None:
+        print(f"trend_plot: {trend_plot}")
 
 
 if __name__ == "__main__":
