@@ -49,6 +49,7 @@ class PairDataset:
         interactionNet = pd.concat([self.train_set,self.test_set])
         self.eval_item_counts = load_item_counts(interactionNet, self.m_item)
         self.niche_items = calculate_metrics(interactionNet, self.eval_item_counts)
+        self._print_niche_diagnostics()
         print('+++++++++++++++++++++++++++++++++++++++++++++++++++')
 
         test_data_satisfactory = self.test_set.loc[self.test_set['rating'] > 4].reset_index(drop=True)
@@ -96,6 +97,19 @@ class PairDataset:
         self._satisfactoryTestDic = self.__build_satisfactory_test()
         self._coldTestDic = self.__build_cold_test()
         self._userDic, self._itemDic = self._getInteractionDic()
+
+
+    def _print_niche_diagnostics(self):
+        item_counts = pd.Series(self.eval_item_counts).sort_index()
+        threshold = item_counts.sum() / len(item_counts)
+        low_freq_distribution = item_counts.value_counts().sort_index().head(10)
+        test_niche_ratio = self.test_set['item'].isin(self.niche_items).mean() * 100
+        print(f"Niche threshold: {threshold:.6f}")
+        print(f"#Niche Items: {len(self.niche_items)}")
+        print(f"Niche Item Ratio: {len(self.niche_items) / len(item_counts):.4f}")
+        print("Item frequency distribution head:")
+        print(low_freq_distribution.to_string())
+        print(f"Test interaction niche ratio: {test_niche_ratio:.2f}")
 
 
     @property
