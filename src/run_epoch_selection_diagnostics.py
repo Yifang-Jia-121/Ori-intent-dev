@@ -11,7 +11,19 @@ import dataloader
 import sampler
 import utils
 import world
+from checkpoint_selection import select_checkpoint_by_metrics
 from models import my_graph_models
+
+
+SELECTION_MODES = [
+    ("best_hr", "hr"),
+    ("best_ndcg", "ndcg"),
+    ("best_novelty", "novelty"),
+    ("best_niche_rate", "niche"),
+    ("best_hr_plus_niche", "hr_plus_niche"),
+    ("acc_constrained_niche", "acc_constrained_niche"),
+    ("acc_constrained_novelty", "acc_constrained_novelty"),
+]
 
 
 def to_builtin(value):
@@ -135,8 +147,16 @@ def strategy_scores(val_results, niche_weight):
         "best_ndcg": val_results["ndcg@50"],
         "best_novelty": val_results["novelty@50"],
         "best_niche_rate": val_results["niche_rate@50"],
-        "best_hr_plus_niche": val_results["hr@50"] + niche_weight * val_results["niche_rate@50"] / 100,
+        "best_hr_plus_niche": val_results["hr@50"] + niche_weight * val_results["niche_rate@50"],
     }
+
+
+def selected_val_metrics(selection):
+    metrics = {}
+    for key, value in selection["selected_metrics"].items():
+        if key.startswith("val_"):
+            metrics[key.replace("val_", "", 1)] = value
+    return metrics
 
 
 def parse_args():
@@ -146,7 +166,8 @@ def parse_args():
     parser.add_argument("--dataset", default=world.dataset)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--epochs", type=int, default=world.TRAIN_epochs)
-    parser.add_argument("--niche-weight", type=float, default=1.0)
+    parser.add_argument("--niche-weight", type=float, default=0.01)
+    parser.add_argument("--min-hr-ratio", "--min_hr_ratio", dest="min_hr_ratio", type=float, default=0.95)
     parser.add_argument("--early-stop", action="store_true")
     return parser.parse_args()
 
@@ -169,23 +190,22 @@ def main():
     print(f"repeat: {args.repeat}")
     print(f"epochs: {args.epochs}")
     print(f"niche_weight: {args.niche_weight}")
+    print(f"min_hr_ratio: {args.min_hr_ratio}")
     print(f"early_stop: {args.early_stop}")
     print(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
     print("=================================================")
 
     epoch_rows = []
     selection_rows = []
-    strategies = ["best_hr", "best_ndcg", "best_novelty", "best_niche_rate", "best_hr_plus_niche"]
 
     for repeat in range(1, args.repeat + 1):
         utils.set_seed(world.seed + repeat - 1)
         rec_model = my_graph_models.CISGNN(config, dataset).to(world.device)
         bpr = sampler.BPRLoss(rec_model, config)
-        best = {
-            strategy: {"score": float("-inf"), "epoch": 0, "val_results": {}, "weight_file": ""}
-            for strategy in strategies
-        }
         best_hr_epoch = 0
+        best_hr_score = float("-inf")
+        repeat_epoch_rows = []
+        epoch_weight_files = {}
 
         print(f"********** diagnostic repeat={repeat} starts **********")
         for epoch in range(1, world.TRAIN_epochs + 1):
@@ -201,6 +221,7 @@ def main():
                 **{f"selection_score_{key}": to_builtin(value) for key, value in scores.items()},
             }
             epoch_rows.append(row)
+            repeat_epoch_rows.append(row)
 
             print(
                 f"EPOCH[{epoch}/{world.TRAIN_epochs}] loss={loss:.6f} "
@@ -210,36 +231,43 @@ def main():
                 f"val_novelty@50={val_results['novelty@50']:.4f}"
             )
 
-            for strategy, score in scores.items():
-                if score > best[strategy]["score"]:
-                    weight_file = os.path.join(
-                        weight_path,
-                        f"{base_file}-epochdiag-{strategy}-r{repeat}.pth.tar",
-                    )
-                    torch.save(rec_model.state_dict(), weight_file)
-                    best[strategy] = {
-                        "score": to_builtin(score),
-                        "epoch": epoch,
-                        "val_results": {key: to_builtin(value) for key, value in val_results.items()},
-                        "weight_file": weight_file,
-                    }
-                    if strategy == "best_hr":
-                        best_hr_epoch = epoch
+            weight_file = os.path.join(
+                weight_path,
+                f"{base_file}-epochdiag-epoch{epoch}-r{repeat}.pth.tar",
+            )
+            torch.save(rec_model.state_dict(), weight_file)
+            epoch_weight_files[epoch] = weight_file
+
+            if val_results["hr@50"] > best_hr_score:
+                best_hr_score = val_results["hr@50"]
+                best_hr_epoch = epoch
 
             if args.early_stop and epoch - best_hr_epoch > world.PATIENCE:
                 print(f"early stop at {epoch} epoch")
                 break
 
-        for strategy in strategies:
-            rec_model.load_state_dict(torch.load(best[strategy]["weight_file"], map_location=torch.device("cpu")))
+        for strategy, mode in SELECTION_MODES:
+            selection = select_checkpoint_by_metrics(
+                repeat_epoch_rows,
+                mode,
+                min_hr_ratio=args.min_hr_ratio,
+                niche_weight=args.niche_weight,
+            )
+            rec_model.load_state_dict(
+                torch.load(epoch_weight_files[selection["selected_epoch"]], map_location=torch.device("cpu"))
+            )
             test_results = Procedure.Test(dataset, rec_model, False, False)
             result_row = {
                 "dataset": world.dataset,
                 "repeat": repeat,
                 "strategy": strategy,
-                "selected_epoch": best[strategy]["epoch"],
-                "selection_score": best[strategy]["score"],
-                **prefixed_metrics("selected_val_", best[strategy]["val_results"]),
+                "selected_epoch": selection["selected_epoch"],
+                "selection_score": selection["selection_score"],
+                "best_val_hr": selection["best_val_hr"],
+                "eligible_epoch_count": selection["eligible_epoch_count"],
+                "selection_mode": selection["selection_mode"],
+                "min_hr_ratio": selection["min_hr_ratio"],
+                **prefixed_metrics("selected_val_", selected_val_metrics(selection)),
                 **prefixed_metrics("test_", test_results),
             }
             selection_rows.append(result_row)
