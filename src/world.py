@@ -17,7 +17,7 @@ if not os.path.exists(FILE_PATH):
 
 config = {}
 all_dataset = ['Ciao', 'Epinions', 'Philadelphia', 'Tucson']
-dataset = 'Epinions'
+dataset = 'Ciao'
 assert dataset in all_dataset
 prepro = '2filter'
 delete_ratio = 0
@@ -30,10 +30,10 @@ config['social_layer'] = 2
 config['pop_num'] = 20
 config['degree_num'] = 20
 config['prior'] = True
-config['pop_fading'] = 1
+config['pop_fading'] = True
 config['ci_alpha'] = 0.2
-config['r_star'] = 0.0
-config['k'] = 20
+# Counterfactual reference score used only during validation and test ranking.
+config['k'] = 3
 config['latent_dim_rec'] = 64
 
 config['bpr_batch_size'] = 1024
@@ -53,11 +53,19 @@ PATH = './saved_models'
 
 config['device'] = device
 
-TRAIN_epochs = 200
+TRAIN_epochs = 1500
 PATIENCE = 10
-REPEAT = 10
+REPEAT = 1
 ng_num = 4
 topks = [10, 20, 30, 50, 100]
+
+# Validation-only search for the accuracy-constrained extension. The baseline
+# is the fixed ci_alpha/k configuration above; test data is never used here.
+CONSTRAINED_ALPHA_GRID = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+CONSTRAINED_K_GRID = [0, 1, 2, 3, 4, 5, 6, 7]
+CONSTRAINED_METRIC_K = 50
+CONSTRAINED_HR_RETENTION = 0.99
+CONSTRAINED_PATIENCE = 10
 
 
 # testMethod = 'tfo'

@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,8 +21,6 @@ class CISGNN(nn.Module):
 
         self.interactionGraph = self.dataset.getInteractionGraph()
         self.socialGraph = self.dataset.getSocialGraph()
-        # self.interPopGraph = self.dataset.getInterPopGraph()
-        # self.socialPopGraph = self.dataset.getSocialPopGraph()
 
         self.embedding_user = torch.nn.Embedding(
             num_embeddings=self.num_users, embedding_dim=self.latent_dim)
@@ -124,6 +121,16 @@ class CISGNN(nn.Module):
         return users_emb, pos_emb, neg_emb, mediator_emb1, mediator_emb2, \
                users_emb_ego, pos_emb_ego, neg_emb_ego
 
+    def get_counterfactual_rating(self, matching_scores, consistency_scores,
+                                  counterfactual_k=None):
+        if counterfactual_k is None:
+            counterfactual_k = self.config['k']
+        if float(counterfactual_k) == 0.0:
+            reference_score = matching_scores.mean(dim=1, keepdim=True)
+        else:
+            reference_score = float(counterfactual_k)
+        return (matching_scores - reference_score) * torch.sigmoid(consistency_scores)
+
     def bpr_loss(self, users, pos, neg, timestamp):
         (users_emb, pos_emb, neg_emb, mediator_emb1, mediator_emb2,
          userEmb0, posEmb0, negEmb0) = self.getEmbedding(users.long(), pos.long(), neg.long())
@@ -144,16 +151,21 @@ class CISGNN(nn.Module):
 
         return loss, reg_loss
 
-    def getUsersRating(self, users):
+    def getUsersRatings(self, users, counterfactual_ks):
         all_users, all_items, h_hist, h_homo = self.computer()
         mediator_emb1, mediator_emb2 = self.computer_mediator(all_users, all_items)
         users_emb = all_users[users.long()]
         items_emb = all_items
         scores = torch.matmul(users_emb, items_emb.t())
         m_scores = torch.matmul(mediator_emb1[users], items_emb.t())
-        r_star = self.config.get('r_star', 0.0)
-        R_CR = (scores - r_star) * torch.sigmoid(m_scores)
-        return self.f(R_CR)
+        return [
+            self.f(self.get_counterfactual_rating(
+                scores, m_scores, counterfactual_k=counterfactual_k))
+            for counterfactual_k in counterfactual_ks
+        ]
+
+    def getUsersRating(self, users, counterfactual_k=None):
+        return self.getUsersRatings(users, [counterfactual_k])[0]
 
     def save_all_ratings(self):
         all_users, all_items, h_hist, h_homo = self.computer()

@@ -1,6 +1,4 @@
 import os
-import joblib
-import pandas as pd
 import torch
 from sklearn.metrics import roc_auc_score
 
@@ -11,10 +9,12 @@ import world
 
 def save_pkl(file, obj, compress=0):
     # compress=('gzip', 3)
+    import joblib
     joblib.dump(value=obj, filename=file, compress=compress)
 
 
 def load_pkl(file):
+    import joblib
     return joblib.load(file)
 
 
@@ -31,7 +31,11 @@ def set_seed(seed):
 
 
 def getFileName(model_name):
-    file = f"{model_name}-{world.config['latent_dim_rec']}-{world.config['layer']}layer-{world.config['social_layer']}social_layer"
+    file = (
+        f"{model_name}-{world.config['latent_dim_rec']}-"
+        f"{world.config['layer']}layer-{world.config['social_layer']}social_layer-"
+        f"k{world.config['k']}-alpha{world.config['ci_alpha']}-seed{world.seed}"
+    )
 
     return file
 
@@ -85,24 +89,19 @@ def HR_ATk(test_data, r, k):
     score = np.count_nonzero(right_pred)
     return score
 
-def diversity_at_k(pred_data, item_popularity, niche_items, k, user_count=None):
+def diversity_at_k(pred_data, item_popularity, niche_items, k):
     sum_novelty = []
     sum_niche_rates = []
     u_num = len(pred_data)
-    novelty_user_count = user_count if user_count is not None else u_num
     for u in range(u_num):
         predictTopK = pred_data[u][:k]
         novelty = 0.0
         niche_num = 0.0
         for i in predictTopK:
-            try:
-                novelty += (np.log2(novelty_user_count / item_popularity[int(i)]))
-                if i in niche_items:
-                    niche_num+=1
-            except:
-                novelty += (np.log2(novelty_user_count / 1))
-                if i in niche_items:
-                    niche_num+=1
+            popularity = max(int(item_popularity.get(int(i), 0)), 1)
+            novelty += np.log2(u_num / popularity)
+            if i in niche_items:
+                niche_num += 1
         novelty = novelty / k
         niche_rate = niche_num/ k
         sum_novelty.append(novelty)
@@ -161,7 +160,10 @@ def getLabel(test_data, pred_data):
 # =========================================================
 import numpy as np
 
-def calculate_metrics(df, item_counts=None):
+def calculate_metrics(df, niche_df=None):
+    if niche_df is None:
+        niche_df = df
+
     # Number of unique users
     num_users = df['user'].nunique()
 
@@ -174,32 +176,34 @@ def calculate_metrics(df, item_counts=None):
     # Sparsity
     sparsity = (1 - num_ratings / (num_users * num_items)) * 100
 
-    # Calculate the distribution of ratings per item.
-    if item_counts is None:
-        item_ratings_count = df['item'].value_counts()
-    else:
-        item_ratings_count = pd.Series(item_counts).sort_index()
-    ranked_item_counts = item_ratings_count.sort_values(ascending=False)
-
     # Average number of ratings per item
-    avg_ratings_per_item = item_ratings_count.sum() / len(item_ratings_count)
+    avg_ratings_per_item = num_ratings / num_items
 
-    niche_items = item_ratings_count[item_ratings_count < avg_ratings_per_item].index.values
+    # Calculate the distribution of ratings per item for training-set statistics.
+    item_ratings_count = df['item'].value_counts()
+
+    # Calculate the distribution of ratings per item used for NicheRatio.
+    niche_item_ratings_count = niche_df['item'].value_counts()
+    niche_num_items = niche_df['item'].nunique()
+    niche_num_ratings = len(niche_df)
+    niche_avg_ratings_per_item = niche_num_ratings / niche_num_items
+
+    niche_items = niche_item_ratings_count[niche_item_ratings_count < niche_avg_ratings_per_item].index.values
     niche_items = set(niche_items)
 
     # Percentage of ratings from top 10% items
     top_10_percent_count = int(num_items * 0.1)
-    top_10_percent_ratings = ranked_item_counts[:top_10_percent_count].sum()
+    top_10_percent_ratings = item_ratings_count[:top_10_percent_count].sum()
     percent_ratings_top_10 = (top_10_percent_ratings / num_ratings) * 100
 
     # Percentage of ratings from top 20% items
     top_20_percent_count = int(num_items * 0.2)
-    top_20_percent_ratings = ranked_item_counts[:top_20_percent_count].sum()
+    top_20_percent_ratings = item_ratings_count[:top_20_percent_count].sum()
     percent_ratings_top_20 = (top_20_percent_ratings / num_ratings) * 100
 
     # Percentage of ratings from top 50% items
     top_50_percent_count = int(num_items * 0.5)
-    top_50_percent_ratings = ranked_item_counts[:top_50_percent_count].sum()
+    top_50_percent_ratings = item_ratings_count[:top_50_percent_count].sum()
     percent_ratings_top_50 = (top_50_percent_ratings / num_ratings) * 100
 
     # Gini coefficient

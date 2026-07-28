@@ -26,14 +26,23 @@ def _convert_sp_mat_to_sp_tensor(X):
     return torch.sparse_coo_tensor(index, data, torch.Size(coo.shape))
 
 
-def _ensure_rating_column(df):
-    if 'rating' not in df.columns:
-        for rating_col in ['rate', 'stars', 'score']:
-            if rating_col in df.columns:
-                return df.rename(columns={rating_col: 'rating'})
-        df = df.copy()
-        df['rating'] = 1.0
-    return df
+def _normalize_adjacency(adj_mat):
+    rowsum = np.asarray(adj_mat.sum(axis=1)).flatten()
+    with np.errstate(divide='ignore'):
+        d_inv = np.power(rowsum, -0.5)
+    d_inv[np.isinf(d_inv)] = 0.0
+    d_mat = sp.diags(d_inv)
+    return d_mat.dot(adj_mat).dot(d_mat).tocsr()
+
+
+def _same_sparsity_pattern(left, right):
+    if left.shape != right.shape or left.nnz != right.nnz:
+        return False
+    left_pattern = left.copy().tocsr()
+    right_pattern = right.copy().tocsr()
+    left_pattern.data = np.ones_like(left_pattern.data)
+    right_pattern.data = np.ones_like(right_pattern.data)
+    return (left_pattern != right_pattern).nnz == 0
 
 
 class PairDataset:
@@ -43,9 +52,6 @@ class PairDataset:
         try:
             self.train_set = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'train_set.txt'))
             self.test_set = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'test_set.txt'))
-            self.item_popularity = pd.read_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'item_popularity.txt'))
-            self.train_set = _ensure_rating_column(self.train_set)
-            self.test_set = _ensure_rating_column(self.test_set)
             self.n_user = pd.concat([self.train_set, self.test_set])['user'].nunique()
             self.m_item = pd.concat([self.train_set, self.test_set])['item'].nunique()
         except IOError:
@@ -53,22 +59,39 @@ class PairDataset:
                                                                             prepro=world.prepro, posThreshold=0,
                                                                             filter_social=2, delete_ratio=world.delete_ratio)
             self.train_set, self.test_set = split_dataset_by_time(interactionNet)
-            self.item_popularity = compute_popularity(self.train_set, tau_p=1 * pow(10, 7))
+            # self.train_set, self.test_set = splitDataset(self.interactionNet, world.testMethod, testSize=0.1)
             self.train_set.to_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'train_set.txt'), index=False)
             self.test_set.to_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'test_set.txt'), index=False)
-            self.item_popularity.to_csv(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'item_popularity.txt'), index=False)
 
-        interactionNet = pd.concat([self.train_set,self.test_set])
-        self.eval_item_counts = load_item_counts(interactionNet, self.m_item)
-        self.niche_items = calculate_metrics(interactionNet, self.eval_item_counts)
-        self._print_niche_diagnostics()
-        print('+++++++++++++++++++++++++++++++++++++++++++++++++++')
+        full_interaction_set = pd.concat([self.train_set, self.test_set]).reset_index(drop=True)
 
         test_data_satisfactory = self.test_set.loc[self.test_set['rating'] > 4].reset_index(drop=True)
         train_data_satisfactory = self.train_set.loc[self.train_set['rating'] > 4].reset_index(drop=True)
         satis_num = len(test_data_satisfactory) + len(train_data_satisfactory)
 
         self.train_set, self.val_set = splitDataset(self.train_set, 'fo', testSize=0.1)
+        self.item_popularity = compute_popularity(self.train_set, tau_p=1 * pow(10, 7))
+        self.niche_items = calculate_metrics(self.train_set, niche_df=full_interaction_set)
+        validation_item_counts = load_item_counts(self.train_set, self.m_item)
+        validation_average_frequency = len(self.train_set) / self.m_item
+        self.validation_niche_items = {
+            item for item, count in validation_item_counts.items()
+            if count < validation_average_frequency
+        }
+        train_pairs = pd.MultiIndex.from_frame(self.train_set[['user', 'item']]).unique()
+        val_pairs = pd.MultiIndex.from_frame(self.val_set[['user', 'item']]).unique()
+        test_pairs = pd.MultiIndex.from_frame(self.test_set[['user', 'item']]).unique()
+        self.split_diagnostics = {
+            'train_validation_pair_overlap': int(len(train_pairs.intersection(val_pairs))),
+            'history_test_pair_overlap': int(
+                len(train_pairs.union(val_pairs).intersection(test_pairs))),
+        }
+        if any(self.split_diagnostics.values()):
+            print(
+                'warning: repeated user-item pairs cross evaluation boundaries: '
+                f"{self.split_diagnostics}"
+            )
+        print('+++++++++++++++++++++++++++++++++++++++++++++++++++')
         # self.val_set, self.test_set = split_val_test(self.test_set, test_size=0.7)
         self.trainUser = np.array(self.train_set['user'])
         self.trainUniqueUser = np.unique(self.train_set['user'])
@@ -87,11 +110,12 @@ class PairDataset:
         print(f"{self._trainDataSize}, {self._valDataSize}, {self._testDataSize} interactions in train, val, test  set")
         print(f"{self._trainUserNum}, {self._valUserNum}, {self._testUserNum} users in train, val, test  set")
         print(f"Number of users: {self.n_user}\n Number of items: {self.m_item}")
-        print(f"Number of Ratings: {self._trainDataSize + self._testDataSize}")
-        print(f"{world.dataset} Rating Sparsity: {1-(self._trainDataSize + self._valDataSize + self._testDataSize)*100 / self.n_user / self.m_item}")
+        interaction_count = self._trainDataSize + self._valDataSize + self._testDataSize
+        print(f"Number of Ratings: {interaction_count}")
+        print(f"{world.dataset} Rating Sparsity: {(1 - interaction_count / self.n_user / self.m_item) * 100}")
         print(f"satisfactions: {satis_num}, satisfaction rate:{satis_num/(self._trainDataSize + self._valDataSize + self._testDataSize)}")
 
-        self.item_counts = load_item_counts(self.train_set, self.m_item)
+        self.item_counts = validation_item_counts
         self.test_data_satisfactory = self.test_set.loc[self.test_set['rating'] > 4].reset_index(drop=True)
         self.longtail_items = get_longtail_items(self.train_set, self.m_item)
 
@@ -109,19 +133,6 @@ class PairDataset:
         self._satisfactoryTestDic = self.__build_satisfactory_test()
         self._coldTestDic = self.__build_cold_test()
         self._userDic, self._itemDic = self._getInteractionDic()
-
-
-    def _print_niche_diagnostics(self):
-        item_counts = pd.Series(self.eval_item_counts).sort_index()
-        threshold = item_counts.sum() / len(item_counts)
-        low_freq_distribution = item_counts.value_counts().sort_index().head(10)
-        test_niche_ratio = self.test_set['item'].isin(self.niche_items).mean() * 100
-        print(f"Niche threshold: {threshold:.6f}")
-        print(f"#Niche Items: {len(self.niche_items)}")
-        print(f"Niche Item Ratio: {len(self.niche_items) / len(item_counts):.4f}")
-        print("Item frequency distribution head:")
-        print(low_freq_distribution.to_string())
-        print(f"Test interaction niche ratio: {test_niche_ratio:.2f}")
 
 
     @property
@@ -270,30 +281,31 @@ class GraphDataset(PairDataset):
 
     def getInteractionGraph(self):
         if self.interactionGraph is None:
+            R = self.UserItemNet.tocsr()
+            expected_adj = sp.bmat(
+                [[None, R], [R.T, None]],
+                format='csr',
+                dtype=np.float32,
+            )
+            cache_path = os.path.join(
+                world.DATA_PATH, 'preprocessed', self.src, 'interaction_adj_mat.npz')
             try:
-                norm_adj = sp.load_npz(os.path.join(world.DATA_PATH, 'preprocessed', self.src, 'interaction_adj_mat.npz'))
+                norm_adj = sp.load_npz(cache_path)
+                if not _same_sparsity_pattern(norm_adj, expected_adj):
+                    raise ValueError('cached interaction graph does not match the current training split')
                 print("successfully loaded normalized interaction adjacency matrix")
-            except IOError:
-                print("generating adjacency matrix")
+            except (OSError, ValueError) as error:
+                print(f"generating adjacency matrix: {error}")
                 start = time()
-                adj_mat = sp.dok_matrix((self.n_user + self.m_item, self.n_user + self.m_item), dtype=np.float32)
-                adj_mat = adj_mat.tolil()
-                R = self.UserItemNet.tolil()
-                adj_mat[:self.n_user, self.n_user:] = R
-                adj_mat[self.n_user:, :self.n_user] = R.T
-                adj_mat = adj_mat.todok()
-
-                rowsum = np.array(adj_mat.sum(axis=1))
-                with np.errstate(divide='ignore'):
-                    d_inv = np.power(rowsum, -0.5).flatten()
-                d_inv[np.isinf(d_inv)] = 0.
-                d_mat = sp.diags(d_inv)
-
-                norm_adj = d_mat.dot(adj_mat)
-                norm_adj = norm_adj.dot(d_mat)
-                norm_adj = norm_adj.tocsr()
-                sp.save_npz(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'interaction_adj_mat.npz'), norm_adj)
-                print(f"costing {time() - start}s, saved normalized interaction adjacency matrix")
+                norm_adj = _normalize_adjacency(expected_adj)
+                cache_saved = True
+                try:
+                    sp.save_npz(cache_path, norm_adj)
+                except OSError as save_error:
+                    cache_saved = False
+                    print(f"warning: could not update interaction graph cache: {save_error}")
+                cache_status = 'cache saved' if cache_saved else 'cache not saved'
+                print(f"costing {time() - start}s, {cache_status}")
 
             self.interactionGraph = _convert_sp_mat_to_sp_tensor(norm_adj)
             self.interactionGraph = self.interactionGraph.coalesce().to(world.device)
@@ -313,28 +325,33 @@ class SocialGraphDataset(GraphDataset):
         print(f"{world.dataset} Link Density: {(1-len(self.friendNet) / self.n_user / self.n_user)*100}")
         self._allFriends = self.getUserFriends(list(range(self.n_user)))
 
+        # self.user_bin_distribution, self.user_counts, self.bin_user_dict = load_user_popularity_paras(self.friendNet,
+        #                                                                                               world.config['degree_num'],
+        #                                                                                               self.n_user)
 
     def getSocialGraph(self):
         if self.socialGraph is None:
+            expected_adj = self.socialNet.tocsr()
+            cache_path = os.path.join(
+                world.DATA_PATH, 'preprocessed', self.dataset_name, 'social_adj_mat.npz')
             try:
-                pre_adj_mat = sp.load_npz(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'social_adj_mat.npz'))
+                pre_adj_mat = sp.load_npz(cache_path)
+                if not _same_sparsity_pattern(pre_adj_mat, expected_adj):
+                    raise ValueError('cached social graph does not match the current social network')
                 print("successfully loaded...")
                 norm_adj = pre_adj_mat
-            except IOError:
-                print("generating adjacency matrix")
+            except (OSError, ValueError) as error:
+                print(f"generating adjacency matrix: {error}")
                 start = time()
-                adj_mat = self.socialNet.tolil()
-                rowsum = np.array(adj_mat.sum(axis=1))
-                with np.errstate(divide='ignore'):
-                    d_inv = np.power(rowsum, -0.5).flatten()
-                d_inv[np.isinf(d_inv)] = 0.
-                d_mat = sp.diags(d_inv)
-
-                norm_adj = d_mat.dot(adj_mat)
-                norm_adj = norm_adj.dot(d_mat)
-                norm_adj = norm_adj.tocsr()
-                print(f"costing {time() - start}s, saved norm_mat...")
-                sp.save_npz(os.path.join(world.DATA_PATH, 'preprocessed', self.dataset_name, 'social_adj_mat.npz'), norm_adj)
+                norm_adj = _normalize_adjacency(expected_adj)
+                cache_saved = True
+                try:
+                    sp.save_npz(cache_path, norm_adj)
+                except OSError as save_error:
+                    cache_saved = False
+                    print(f"warning: could not update social graph cache: {save_error}")
+                cache_status = 'cache saved' if cache_saved else 'cache not saved'
+                print(f"costing {time() - start}s, {cache_status}")
 
             self.socialGraph = _convert_sp_mat_to_sp_tensor(norm_adj)
             self.socialGraph = self.socialGraph.coalesce().to(world.device)
@@ -452,13 +469,17 @@ class DecGraphDataset(SocialGraphDataset):
 
     def bucketize(self, data, col, n):
         sorted_df = data.sort_values(by=col)
-        # sorted_df['bucket_'+col] = pd.cut(sorted_df[col], n)
         sorted_df['bucket_' + col] = pd.qcut(sorted_df[col], n, duplicates='drop')
         sorted_df = sorted_df.sort_values(by=['bucket_' + col])
         sorted_df['bucket_'+col] = pd.Categorical(sorted_df['bucket_'+col]).codes
-        sorted_df['bucket_'+col] = pd.Categorical(sorted_df['bucket_'+col]).codes
+        if (sorted_df['bucket_' + col] < 0).all():
+            sorted_df['bucket_' + col] = 0
         mean_buckets = sorted_df.groupby(by='bucket_'+col)[col].mean().values
-        normalized_means = mean_buckets / mean_buckets.sum()
+        mean_sum = mean_buckets.sum()
+        if mean_sum > 0:
+            normalized_means = mean_buckets / mean_sum
+        else:
+            normalized_means = np.full(len(mean_buckets), 1.0 / len(mean_buckets))
         return sorted_df, normalized_means
 
 
@@ -518,7 +539,6 @@ def loadInteraction(src='Ciao', dataset_name='', prepro='origin', binary=False, 
 
     elif src == 'Philadelphia' or src == 'Tucson':
         df = pd.read_csv(os.path.join(world.DATA_PATH, 'raw', src, 'ratings.csv'))
-        df = _ensure_rating_column(df)
         df['timestamp'] = pd.to_datetime(df['timestamp']).view('int64')// 10**9
     else:
         raise ValueError('Invalid Dataset Error')
@@ -698,6 +718,7 @@ def split_dataset_by_time(data):
     return train_data, test_data
 
 def compute_K_item_popularity(data, item_num):
+    # 计算流行度, K个时间段
     min_time = data['timestamp'].min()
     max_time = data['timestamp'].max()
     K = 10
@@ -756,7 +777,7 @@ def splitDataset(df, testMethod='tfo', testSize=.2):
     if testMethod == 'ufo':
         driver_ids = df['user']
         _, driver_indices = np.unique(np.array(driver_ids), return_inverse=True)
-        gss = GroupShuffleSplit(n_splits=1, test_size=testSize, random_state=42)
+        gss = GroupShuffleSplit(n_splits=1, test_size=testSize, random_state=23)
         for train_idx, test_idx in gss.split(df, groups=driver_indices):
             train_set, test_set = df.loc[train_idx, :].copy(), df.loc[test_idx, :].copy()
 
@@ -781,7 +802,7 @@ def splitDataset(df, testMethod='tfo', testSize=.2):
         train_set, test_set = df.iloc[:split_idx, :].copy(), df.iloc[split_idx:, :].copy()
 
     elif testMethod == 'fo':
-        train_set, test_set = train_test_split(df, test_size=testSize, random_state=42)
+        train_set, test_set = train_test_split(df, test_size=testSize, random_state=2023)
 
     elif testMethod == 'tloo':
         # df = df.sample(frac=1)
@@ -809,6 +830,22 @@ def splitDataset(df, testMethod='tfo', testSize=.2):
     return train_set, test_set
 
 
+def split_val_test(test, test_size=0.7, seed=2022):
+    test_unique_user = test['user'].unique()
+    N_ = test_unique_user.shape[0]
+    np.random.seed(seed)   # numpy的随机性
+    np.random.shuffle(test_unique_user)
+    split_idx = int(N_ * test_size)
+    test_real_user = test_unique_user[:split_idx]
+    valid_real_user = test_unique_user[split_idx:]
+    print("tot user in the last stage:", N_, "real test user:", test_real_user.shape[0], "real valid user:",
+          valid_real_user.shape[0])
+    data_real_test = test[test['user'].isin(test_real_user)].reset_index()
+    data_real_valid = test[test['user'].isin(valid_real_user)].reset_index()
+    print("tot itr:", test.shape, "real test:", data_real_test.shape, "real valid:", data_real_valid.shape)
+
+    return data_real_valid, data_real_test
+
 def get_longtail_items(df, num_items):
     item_counts = Counter(df['item'].values)
     for i in range(num_items):
@@ -822,6 +859,7 @@ def get_longtail_items(df, num_items):
     return longtail_items
 
 
+# 定义计算Gini系数的函数
 def gini_coefficient(x):
     x = np.array(x)
     array = np.sort(x)
